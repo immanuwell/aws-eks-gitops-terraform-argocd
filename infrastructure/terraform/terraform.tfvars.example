@@ -1,0 +1,41 @@
+# Copy this file to terraform.tfvars and fill in your values.
+# terraform.tfvars is gitignored — never commit real values.
+
+aws_region  = "us-east-1"
+environment = "production"
+
+cluster_name       = "eks-gitops"
+kubernetes_version = "1.29"
+
+# VPC
+vpc_cidr             = "10.0.0.0/16"
+availability_zones   = ["us-east-1a", "us-east-1b", "us-east-1c"]
+private_subnet_cidrs = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+public_subnet_cidrs  = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
+single_nat_gateway   = false  # Set true for dev to save ~$90/month
+
+# Node Groups
+system_node_instance_types = ["t3.medium"]
+system_node_min_size       = 2
+system_node_max_size       = 4
+system_node_desired_size   = 2
+
+app_node_instance_types = ["t3.large"]
+app_node_min_size       = 2
+app_node_max_size       = 10
+app_node_desired_size   = 3
+
+# ArgoCD
+argocd_chart_version = "6.7.3"
+# Generate with: htpasswd -nbBC 10 '' YOUR_PASSWORD | tr -d ':\n'
+argocd_admin_password_bcrypt = "$2y$10$..."
+gitops_repo_url      = "https://github.com/immanuwell/aws-eks-gitops-terraform-argocd"
+gitops_repo_revision = "main"
+
+# GitHub OIDC (for keyless CI/CD auth)
+github_org  = "immanuwell"
+github_repo = "aws-eks-gitops-terraform-argocd"
+
+# ECR
+ecr_repositories          = ["demo-app"]
+ecr_image_retention_count = 30
