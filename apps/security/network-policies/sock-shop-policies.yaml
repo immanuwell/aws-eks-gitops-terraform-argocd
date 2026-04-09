@@ -1,0 +1,210 @@
+# Sock Shop explicit allow rules — only permit documented inter-service traffic.
+# Architecture reference:
+#   browser → front-end → catalogue, carts, orders, user, session-db
+#   orders → carts, payment, shipping, user
+#   queue-master → rabbitmq
+
+---
+# front-end: accepts inbound from ALB (anywhere), sends to all services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: front-end
+  namespace: sock-shop
+spec:
+  podSelector:
+    matchLabels:
+      app: front-end
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - {}  # Allow from ALB (ALB uses node IPs, so we allow all ingress)
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: catalogue
+        - podSelector:
+            matchLabels:
+              app: carts
+        - podSelector:
+            matchLabels:
+              app: orders
+        - podSelector:
+            matchLabels:
+              app: payment
+        - podSelector:
+            matchLabels:
+              app: shipping
+      ports:
+        - port: 80
+    # Allow DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+
+---
+# catalogue: accepts from front-end only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: catalogue
+  namespace: sock-shop
+spec:
+  podSelector:
+    matchLabels:
+      app: catalogue
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: front-end
+      ports:
+        - port: 80
+    # Allow Prometheus scraping
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 80
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: catalogue-db
+      ports:
+        - port: 3306
+    - ports:
+        - port: 53
+          protocol: UDP
+
+---
+# orders: accepts from front-end, sends to carts/payment/shipping
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: orders
+  namespace: sock-shop
+spec:
+  podSelector:
+    matchLabels:
+      app: orders
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: front-end
+      ports:
+        - port: 80
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 80
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: carts
+        - podSelector:
+            matchLabels:
+              app: payment
+        - podSelector:
+            matchLabels:
+              app: shipping
+      ports:
+        - port: 80
+    - ports:
+        - port: 53
+          protocol: UDP
+
+---
+# payment: accepts from orders/front-end only (PCI-relevant isolation)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: payment
+  namespace: sock-shop
+spec:
+  podSelector:
+    matchLabels:
+      app: payment
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: orders
+        - podSelector:
+            matchLabels:
+              app: front-end
+      ports:
+        - port: 80
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 80
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+
+---
+# Allow Prometheus (monitoring namespace) to scrape all sock-shop pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scraping
+  namespace: sock-shop
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 80
+
+---
+# demo-app: accept from ALB, allow egress to AWS APIs (via IRSA if needed)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: demo-app
+  namespace: demo-app
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: demo-app
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - {}  # From ALB
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 8080
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 443  # AWS APIs via IRSA

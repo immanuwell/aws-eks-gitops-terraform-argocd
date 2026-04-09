@@ -1,0 +1,66 @@
+# Policy: Disallow 'latest' image tag
+# The 'latest' tag is mutable — the same tag can point to different images over time.
+# This breaks reproducibility and makes rollbacks unreliable.
+# All images must be pinned to an immutable tag (SHA digest preferred).
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-latest-tag
+  annotations:
+    policies.kyverno.io/title: Disallow Latest Tag
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Container images must not use the 'latest' tag. Pin images to a specific
+      semantic version or SHA digest for reproducible deployments.
+spec:
+  validationFailureAction: Enforce
+  background: true
+
+  rules:
+    - name: require-image-tag
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces:
+                - sock-shop
+                - demo-app
+      validate:
+        message: "Image tag is required. The ':latest' tag (or no tag) is not allowed."
+        foreach:
+          - list: "request.object.spec.containers"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.image }}"
+                    operator: Equals
+                    value: "*:latest"
+                  - key: "{{ element.image }}"
+                    operator: NotContains
+                    value: ":"
+
+    - name: require-image-tag-init-containers
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces:
+                - sock-shop
+                - demo-app
+      preconditions:
+        any:
+          - key: "{{ request.object.spec.initContainers[] | length(@) }}"
+            operator: GreaterThan
+            value: 0
+      validate:
+        message: "Init container images must not use ':latest' tag."
+        foreach:
+          - list: "request.object.spec.initContainers"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.image }}"
+                    operator: Equals
+                    value: "*:latest"

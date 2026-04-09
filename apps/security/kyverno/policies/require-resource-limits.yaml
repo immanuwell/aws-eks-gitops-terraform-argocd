@@ -1,0 +1,60 @@
+# Policy: Require CPU and memory limits on all containers
+# Without limits, a single misbehaving container can consume all node resources,
+# causing noisy-neighbor problems and node instability.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-resource-limits
+  annotations:
+    policies.kyverno.io/title: Require Resource Limits
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      CPU and memory limits are required on all containers to prevent
+      resource exhaustion. HPA cannot function correctly without requests defined.
+spec:
+  validationFailureAction: Enforce
+  background: true
+
+  rules:
+    - name: require-limits
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces:
+                - sock-shop
+                - demo-app
+                - default
+      validate:
+        message: "CPU and memory limits are required for all containers."
+        foreach:
+          - list: "request.object.spec.containers"
+            pattern:
+              resources:
+                limits:
+                  memory: "?*"
+                  cpu: "?*"
+                requests:
+                  memory: "?*"
+                  cpu: "?*"
+
+    - name: disallow-excessive-memory
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces:
+                - sock-shop
+                - demo-app
+      validate:
+        message: "Memory limit cannot exceed 4Gi per container."
+        foreach:
+          - list: "request.object.spec.containers"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ divide(to_number(replace_all(element.resources.limits.memory, 'Gi', '')), 1) }}"
+                    operator: GreaterThan
+                    value: 4

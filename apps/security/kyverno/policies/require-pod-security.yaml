@@ -1,0 +1,106 @@
+# Policy: Enforce Pod Security Standards (Restricted profile)
+# Implements the Kubernetes PSS "restricted" profile via Kyverno,
+# giving per-namespace control rather than the blunt admission webhook.
+
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-non-root-user
+  annotations:
+    policies.kyverno.io/title: Require Non-Root User
+    policies.kyverno.io/category: Pod Security Standards (Restricted)
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Containers must run as a non-root user. Running as root in a container
+      increases the blast radius of a container escape vulnerability.
+spec:
+  validationFailureAction: Enforce
+  background: true
+
+  rules:
+    - name: require-run-as-non-root
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces:
+                - sock-shop
+                - demo-app
+      validate:
+        message: "Containers must run as a non-root user. Set securityContext.runAsNonRoot=true."
+        anyPattern:
+          - spec:
+              securityContext:
+                runAsNonRoot: true
+          - spec:
+              containers:
+                - securityContext:
+                    runAsUser: ">0"
+
+    - name: require-read-only-root-filesystem
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces:
+                - sock-shop
+                - demo-app
+      validate:
+        message: "Root filesystem must be read-only. Set securityContext.readOnlyRootFilesystem=true."
+        foreach:
+          - list: "request.object.spec.containers"
+            pattern:
+              securityContext:
+                readOnlyRootFilesystem: true
+
+    - name: require-seccomp-profile
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces:
+                - demo-app
+      validate:
+        message: "A seccomp profile (RuntimeDefault or Localhost) must be set."
+        anyPattern:
+          - spec:
+              securityContext:
+                seccompProfile:
+                  type: RuntimeDefault
+          - spec:
+              securityContext:
+                seccompProfile:
+                  type: Localhost
+
+---
+# Policy: Disallow privilege escalation
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-privilege-escalation
+  annotations:
+    policies.kyverno.io/title: Disallow Privilege Escalation
+    policies.kyverno.io/category: Pod Security Standards (Restricted)
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+spec:
+  validationFailureAction: Enforce
+  background: true
+
+  rules:
+    - name: disallow-privilege-escalation
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces:
+                - sock-shop
+                - demo-app
+      validate:
+        message: "Privilege escalation is not allowed. Set allowPrivilegeEscalation=false."
+        foreach:
+          - list: "request.object.spec.containers"
+            pattern:
+              securityContext:
+                allowPrivilegeEscalation: false

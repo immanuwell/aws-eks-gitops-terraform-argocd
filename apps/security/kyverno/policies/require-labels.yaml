@@ -1,0 +1,64 @@
+# Policy: Require standard labels on all workloads
+# Labels are required for: service discovery, cost allocation, incident routing
+# and ArgoCD/Kyverno policy targeting.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-labels
+  annotations:
+    policies.kyverno.io/title: Require Labels
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      All Pods must have 'app' and 'env' labels.
+      These labels are required for monitoring dashboards, network policies,
+      and cost attribution across teams.
+spec:
+  validationFailureAction: Enforce
+  background: true
+
+  rules:
+    - name: check-app-label
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces:
+                - sock-shop
+                - demo-app
+                - default
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kyverno
+                - argocd
+                - monitoring
+                - external-secrets
+                - argo-rollouts
+              selector:
+                matchLabels:
+                  "app.kubernetes.io/managed-by": Helm
+      validate:
+        message: "The label 'app' is required on all pods."
+        pattern:
+          metadata:
+            labels:
+              app: "?*"
+
+    - name: check-env-label
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces:
+                - sock-shop
+                - demo-app
+      validate:
+        message: "The label 'env' is required and must be one of: production, staging, development."
+        pattern:
+          metadata:
+            labels:
+              env: "production | staging | development"
