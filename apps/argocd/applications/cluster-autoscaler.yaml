@@ -1,0 +1,71 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cluster-autoscaler
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+
+  source:
+    repoURL: https://kubernetes.github.io/autoscaler
+    chart: cluster-autoscaler
+    targetRevision: "9.36.0"
+    helm:
+      releaseName: cluster-autoscaler
+      values: |
+        fullnameOverride: cluster-autoscaler
+
+        autoDiscovery:
+          clusterName: eks-gitops  # Must match your cluster name
+
+        awsRegion: us-east-1
+
+        rbac:
+          serviceAccount:
+            annotations:
+              # IRSA — ARN from Terraform output: module.irsa.cluster_autoscaler_role_arn
+              eks.amazonaws.com/role-arn: "arn:aws:iam::471112543812:role/eks-gitops-cluster-autoscaler"
+
+        # Tuning — be aggressive on scale-up, conservative on scale-down
+        extraArgs:
+          scale-down-enabled: true
+          scale-down-delay-after-add: "5m"
+          scale-down-unneeded-time: "10m"
+          scale-down-utilization-threshold: "0.5"
+          skip-nodes-with-local-storage: false
+          skip-nodes-with-system-pods: true
+          balance-similar-node-groups: true
+          expander: least-waste
+          new-pod-scale-up-delay: "0s"
+
+        resources:
+          requests:
+            cpu: 100m
+            memory: 300Mi
+          limits:
+            cpu: 300m
+            memory: 512Mi
+
+        tolerations:
+          - key: CriticalAddonsOnly
+            operator: Exists
+            effect: NoSchedule
+
+        podAnnotations:
+          prometheus.io/scrape: "true"
+          prometheus.io/port: "8085"
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false

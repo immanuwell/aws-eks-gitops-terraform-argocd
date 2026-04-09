@@ -1,0 +1,143 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monitoring
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    app.kubernetes.io/component: monitoring
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    targetRevision: "57.1.1"
+    helm:
+      releaseName: kube-prometheus-stack
+      valueFiles: []
+      values: |
+        # Inline values — also see apps/monitoring/values/kube-prometheus-stack.yaml
+        # for the full values file used in local development.
+
+        nameOverride: "kps"
+
+        # Grafana configuration
+        grafana:
+          enabled: true
+          adminPassword: ""  # Loaded from Secret via ESO
+          adminUser: admin
+          persistence:
+            enabled: true
+            storageClassName: gp3
+            size: 10Gi
+          ingress:
+            enabled: true
+            ingressClassName: alb
+            annotations:
+              alb.ingress.kubernetes.io/scheme: internet-facing
+              alb.ingress.kubernetes.io/target-type: ip
+            hosts:
+              - grafana.eks-gitops.example.com
+          sidecar:
+            dashboards:
+              enabled: true
+              label: grafana_dashboard
+              labelValue: "1"
+              searchNamespace: ALL  # Pick up dashboards from all namespaces
+          dashboardProviders:
+            dashboardproviders.yaml:
+              apiVersion: 1
+              providers:
+                - name: default
+                  orgId: 1
+                  folder: ''
+                  type: file
+                  disableDeletion: false
+                  editable: true
+                  options:
+                    path: /var/lib/grafana/dashboards/default
+
+        # Prometheus configuration
+        prometheus:
+          prometheusSpec:
+            retention: 30d
+            retentionSize: "45GiB"
+            storageSpec:
+              volumeClaimTemplate:
+                spec:
+                  storageClassName: gp3
+                  accessModes: [ReadWriteOnce]
+                  resources:
+                    requests:
+                      storage: 50Gi
+            # Scrape all ServiceMonitors and PodMonitors across namespaces
+            serviceMonitorSelectorNilUsesHelmValues: false
+            podMonitorSelectorNilUsesHelmValues: false
+            ruleSelectorNilUsesHelmValues: false
+            resources:
+              requests:
+                cpu: 200m
+                memory: 1Gi
+              limits:
+                cpu: 1000m
+                memory: 2Gi
+
+        # Alertmanager configuration
+        alertmanager:
+          alertmanagerSpec:
+            storage:
+              volumeClaimTemplate:
+                spec:
+                  storageClassName: gp3
+                  accessModes: [ReadWriteOnce]
+                  resources:
+                    requests:
+                      storage: 5Gi
+          config:
+            global:
+              resolve_timeout: 5m
+            route:
+              group_by: ['namespace', 'alertname']
+              group_wait: 30s
+              group_interval: 5m
+              repeat_interval: 12h
+              receiver: 'null'
+              routes:
+                - match:
+                    alertname: Watchdog
+                  receiver: 'null'
+            receivers:
+              - name: 'null'
+            # Add Slack/PagerDuty receivers here for production
+
+        # Node Exporter
+        nodeExporter:
+          enabled: true
+
+        # kube-state-metrics
+        kubeStateMetrics:
+          enabled: true
+
+        # Tolerations so monitoring runs on system nodes
+        prometheus:
+          prometheusSpec:
+            tolerations:
+              - key: CriticalAddonsOnly
+                operator: Exists
+                effect: NoSchedule
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true   # Required for kube-prometheus-stack CRDs

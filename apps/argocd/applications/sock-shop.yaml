@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sock-shop
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"  # After platform components
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/immanuwell/aws-eks-gitops-terraform-argocd
+    targetRevision: main
+    path: apps/sock-shop
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: sock-shop
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+
+  # Ignore HPA-managed replica counts (HPA owns scaling decisions)
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas

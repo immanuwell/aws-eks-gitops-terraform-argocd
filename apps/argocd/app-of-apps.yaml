@@ -1,0 +1,55 @@
+# Root ArgoCD Application — the "App of Apps" bootstrap point.
+#
+# Apply this single manifest to seed the entire platform:
+#   kubectl apply -f apps/argocd/app-of-apps.yaml
+#
+# ArgoCD then discovers all child Applications in apps/argocd/applications/
+# and syncs them automatically. Adding a new application is as simple as
+# creating a new YAML file in that directory.
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform
+  namespace: argocd
+  # Cascade delete: removing this app removes all child apps
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    app.kubernetes.io/name: platform
+    app.kubernetes.io/component: app-of-apps
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"  # Sync first
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/immanuwell/aws-eks-gitops-terraform-argocd
+    targetRevision: main
+    path: apps/argocd/applications
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+
+  syncPolicy:
+    automated:
+      prune: true      # Remove resources no longer in Git
+      selfHeal: true   # Revert manual cluster changes (drift detection)
+    syncOptions:
+      - CreateNamespace=true
+      - PruneLast=true        # Prune after everything else syncs
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+
+  # Ignore differences that are managed externally (e.g. by controllers)
+  ignoreDifferences:
+    - group: argoproj.io
+      kind: Application
+      jsonPointers:
+        - /status
