@@ -1,0 +1,231 @@
+# kube-prometheus-stack values for local reference and documentation.
+# The actual values used by ArgoCD are inline in apps/argocd/applications/monitoring.yaml.
+# This file serves as a complete reference with comments.
+
+nameOverride: "kps"
+
+# ─── Grafana ──────────────────────────────────────────────────────────────────
+grafana:
+  enabled: true
+  adminUser: admin
+  # Password loaded from ExternalSecret (apps/security/external-secrets/app-secrets.yaml)
+  adminPassword: ""
+
+  persistence:
+    enabled: true
+    storageClassName: gp3
+    size: 10Gi
+
+  ingress:
+    enabled: true
+    ingressClassName: alb
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    hosts:
+      - grafana.eks-gitops.example.com
+
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+
+  # Pre-installed community dashboards by ID
+  dashboards:
+    default:
+      kubernetes-cluster:
+        gnetId: 7249
+        revision: 1
+        datasource: Prometheus
+      nginx-ingress:
+        gnetId: 9614
+        revision: 1
+        datasource: Prometheus
+      node-exporter:
+        gnetId: 1860
+        revision: 31
+        datasource: Prometheus
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ─── Prometheus ───────────────────────────────────────────────────────────────
+prometheus:
+  prometheusSpec:
+    retention: 30d
+    retentionSize: "45GiB"
+
+    # Scrape all namespaces
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 50Gi
+
+    resources:
+      requests:
+        cpu: 200m
+        memory: 1Gi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+
+    tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+        effect: NoSchedule
+
+# ─── Alertmanager ─────────────────────────────────────────────────────────────
+alertmanager:
+  alertmanagerSpec:
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 5Gi
+
+  config:
+    global:
+      resolve_timeout: 5m
+      # slack_api_url: 'https://hooks.slack.com/services/...'
+
+    templates:
+      - '/etc/alertmanager/config/*.tmpl'
+
+    route:
+      group_by: ['namespace', 'alertname', 'severity']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      receiver: 'null'
+      routes:
+        - match:
+            alertname: Watchdog
+          receiver: 'null'
+        - match:
+            severity: critical
+          receiver: 'null'  # Replace with: slack-critical or pagerduty
+          continue: true
+        - match:
+            severity: warning
+          receiver: 'null'  # Replace with: slack-warnings
+
+    receivers:
+      - name: 'null'
+      # Example Slack receiver:
+      # - name: slack-critical
+      #   slack_configs:
+      #     - channel: '#alerts-critical'
+      #       title: '{{ template "slack.default.title" . }}'
+      #       text: '{{ template "slack.default.text" . }}'
+      #       send_resolved: true
+
+# ─── Additional Alert Rules ───────────────────────────────────────────────────
+additionalPrometheusRulesMap:
+  custom-rules:
+    groups:
+      - name: eks-gitops.rules
+        interval: 30s
+        rules:
+          - alert: PodCrashLooping
+            expr: |
+              rate(kube_pod_container_status_restarts_total[15m]) > 0
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash looping"
+              description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has restarted {{ $value | humanize }} times in the last 15 minutes."
+
+          - alert: HPAAtMaxReplicas
+            expr: |
+              kube_horizontalpodautoscaler_status_current_replicas
+              == kube_horizontalpodautoscaler_spec_max_replicas
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "HPA {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} is at max replicas"
+              description: "HPA is running at maximum capacity. Consider increasing maxReplicas."
+
+          - alert: NodeNotReady
+            expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Node {{ $labels.node }} is not ready"
+              description: "Node {{ $labels.node }} has been in NotReady state for more than 5 minutes."
+
+          - alert: PersistentVolumeClaimPending
+            expr: kube_persistentvolumeclaim_status_phase{phase="Pending"} == 1
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is pending"
+              description: "PersistentVolumeClaim has been in Pending state for more than 5 minutes."
+
+          - alert: ArgocdAppNotSynced
+            expr: |
+              argocd_app_info{sync_status!="Synced"} == 1
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "ArgoCD application {{ $labels.name }} is not synced"
+              description: "ArgoCD application {{ $labels.name }} has not been in Synced state for 10 minutes."
+
+          - alert: SockShopHighErrorRate
+            expr: |
+              sum(rate(http_requests_total{namespace="sock-shop",status=~"5.."}[5m]))
+              /
+              sum(rate(http_requests_total{namespace="sock-shop"}[5m])) > 0.05
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Sock Shop error rate above 5%"
+              description: "The Sock Shop is returning errors for more than 5% of requests."
+
+# ─── Node Exporter ────────────────────────────────────────────────────────────
+nodeExporter:
+  enabled: true
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+
+# ─── kube-state-metrics ───────────────────────────────────────────────────────
+kubeStateMetrics:
+  enabled: true
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 256Mi

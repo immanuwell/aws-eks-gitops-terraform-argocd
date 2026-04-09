@@ -1,0 +1,116 @@
+# ServiceMonitor resources tell Prometheus which services to scrape.
+# These complement the prometheus.io/scrape pod annotations.
+
+---
+# Scrape sock-shop front-end metrics
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: sock-shop-front-end
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - sock-shop
+  selector:
+    matchLabels:
+      app: front-end
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+
+---
+# Scrape demo-app metrics
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: demo-app
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - demo-app
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: demo-app
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+
+---
+# Scrape ArgoCD metrics
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: argocd-metrics
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - argocd
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-metrics
+  endpoints:
+    - port: metrics
+      interval: 30s
+
+---
+# PrometheusRule for demo-app SLOs
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: demo-app-slos
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: demo-app.slo
+      interval: 30s
+      rules:
+        # Availability SLO: 99.9% success rate
+        - record: demo_app:request_success_rate:rate5m
+          expr: |
+            sum(rate(http_requests_total{namespace="demo-app", status!~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total{namespace="demo-app"}[5m]))
+
+        # Latency SLO: p99 < 500ms
+        - record: demo_app:request_latency_p99:rate5m
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(http_request_duration_seconds_bucket{namespace="demo-app"}[5m]))
+              by (le)
+            )
+
+        - alert: DemoAppSLOBreach
+          expr: demo_app:request_success_rate:rate5m < 0.999
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "demo-app availability SLO breach"
+            description: "demo-app success rate is {{ $value | humanizePercentage }}, below 99.9% SLO."
+            runbook: "https://github.com/immanuwell/aws-eks-gitops-terraform-argocd/blob/main/docs/runbook.md#incident-response"
+
+        - alert: DemoAppLatencySLOBreach
+          expr: demo_app:request_latency_p99:rate5m > 0.5
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "demo-app latency SLO breach"
+            description: "demo-app p99 latency is {{ $value | humanizeDuration }}, above 500ms SLO."
