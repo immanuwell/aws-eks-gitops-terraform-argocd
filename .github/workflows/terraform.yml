@@ -1,0 +1,220 @@
+name: Terraform
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infrastructure/terraform/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'infrastructure/terraform/**'
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: false  # Never cancel infra jobs mid-run
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write  # For posting plan output as PR comment
+
+env:
+  TF_VERSION: "1.7.4"
+  TF_WORKING_DIR: infrastructure/terraform
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+jobs:
+  # ─── Lint & Validate ─────────────────────────────────────────────────────────
+  validate:
+    name: Validate & Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Format Check
+        id: fmt
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        id: init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -backend=true
+
+      - name: Terraform Validate
+        id: validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform validate -no-color
+
+      - name: Post validation status to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const output = `#### Terraform Validation
+            | Check | Status |
+            |-------|--------|
+            | Format | ${{ steps.fmt.outcome == 'success' && '✅ Pass' || '❌ Fail' }} |
+            | Init | ${{ steps.init.outcome == 'success' && '✅ Pass' || '❌ Fail' }} |
+            | Validate | ${{ steps.validate.outcome == 'success' && '✅ Pass' || '❌ Fail' }} |
+
+            *Workflow: \`${{ github.workflow }}\` | Actor: \`${{ github.actor }}\`*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+
+  # ─── Plan ────────────────────────────────────────────────────────────────────
+  plan:
+    name: Terraform Plan
+    needs: validate
+    runs-on: ubuntu-latest
+
+    outputs:
+      exitcode: ${{ steps.plan.outputs.exitcode }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          terraform plan \
+            -var-file="terraform.tfvars" \
+            -out=tfplan \
+            -no-color \
+            -detailed-exitcode \
+            2>&1 | tee plan-output.txt
+          echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: ${{ env.TF_WORKING_DIR }}/tfplan
+          retention-days: 5
+
+      - name: Post plan to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('${{ env.TF_WORKING_DIR }}/plan-output.txt', 'utf8');
+
+            // Truncate if too long for GitHub comment (65536 char limit)
+            const maxLength = 60000;
+            const truncated = planOutput.length > maxLength
+              ? planOutput.slice(-maxLength) + '\n\n...output truncated...'
+              : planOutput;
+
+            const exitcode = '${{ steps.plan.outputs.exitcode }}';
+            const status = exitcode === '0'
+              ? '✅ No changes'
+              : exitcode === '2'
+              ? '⚠️ Changes detected'
+              : '❌ Error';
+
+            const body = `#### Terraform Plan: ${status}
+
+            <details><summary>Show Plan</summary>
+
+            \`\`\`hcl
+            ${truncated}
+            \`\`\`
+            </details>
+
+            *Exit code: \`${exitcode}\` | Workflow: \`${{ github.workflow }}\`*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Fail if plan errored
+        if: steps.plan.outputs.exitcode == '1'
+        run: exit 1
+
+  # ─── Apply (main branch only, manual approval recommended) ──────────────────
+  apply:
+    name: Terraform Apply
+    needs: plan
+    if: |
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push' &&
+      needs.plan.outputs.exitcode == '2'
+    runs-on: ubuntu-latest
+    environment: production  # Requires manual approval in GitHub Environments
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan
+          path: ${{ env.TF_WORKING_DIR }}
+
+      - name: Terraform Apply
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform apply -auto-approve tfplan
+
+      - name: Post apply summary
+        run: |
+          echo "## Terraform Apply Complete ✅" >> $GITHUB_STEP_SUMMARY
+          echo "Applied changes to production infrastructure." >> $GITHUB_STEP_SUMMARY
+          echo "Commit: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
