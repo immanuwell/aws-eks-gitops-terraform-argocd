@@ -1,0 +1,38 @@
+# PersistentVolumeClaims for stateful sock-shop components.
+# Uses gp3 StorageClass provisioned by the EBS CSI driver.
+
+---
+# Catalogue DB — MySQL persistent storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: catalogue-db-pvc
+  namespace: sock-shop
+  labels:
+    app: catalogue-db
+    env: production
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# Cart DB — Redis persistent storage (optional, improves resilience)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: carts-db-pvc
+  namespace: sock-shop
+  labels:
+    app: carts-db
+    env: production
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 5Gi
