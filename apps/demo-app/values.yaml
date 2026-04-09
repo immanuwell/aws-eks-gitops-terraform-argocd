@@ -1,0 +1,120 @@
+# Default values for demo-app.
+# Image tag is updated automatically by the CI/CD pipeline (ci-cd.yml).
+
+replicaCount: 3
+
+image:
+  repository: "471112543812.dkr.ecr.us-east-1.amazonaws.com/demo-app"
+  tag: "latest"  # Replaced by CI/CD with the git SHA
+  pullPolicy: IfNotPresent
+
+# Blue-green color — updated per deployment for visual differentiation
+appColor: blue
+appVersion: "1.0.0"
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+# Ingress via AWS Load Balancer Controller
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+  hosts:
+    - host: demo.eks-gitops.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+# HPA — scaling based on CPU utilization
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 60
+  targetMemoryUtilizationPercentage: 80
+
+# Pod Disruption Budget — ensure availability during node maintenance
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Argo Rollouts blue-green strategy
+rollout:
+  enabled: true
+  strategy:
+    blueGreen:
+      # activeService routes live traffic (blue)
+      activeService: demo-app-active
+      # previewService routes preview traffic (green)
+      previewService: demo-app-preview
+      autoPromotionEnabled: false  # Require manual promotion
+      scaleDownDelaySeconds: 30
+
+# Liveness and readiness probes
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8080
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Topology spread for multi-AZ HA
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: demo-app
+
+# Security context — run as non-root
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+nodeSelector:
+  "node.kubernetes.io/role": application
+
+tolerations: []
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""

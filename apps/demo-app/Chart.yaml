@@ -1,0 +1,12 @@
+apiVersion: v2
+name: demo-app
+description: EKS GitOps demo application with blue-green Argo Rollout
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - demo
+  - gitops
+  - argo-rollouts
+maintainers:
+  - name: platform-team

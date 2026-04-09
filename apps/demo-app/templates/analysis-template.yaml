@@ -1,0 +1,56 @@
+# AnalysisTemplate — automated pre-promotion health check for Argo Rollouts.
+# Before promoting from blue to green, this analysis queries Prometheus
+# to verify the preview service meets our SLO thresholds.
+#
+# Uncomment the prePromotionAnalysis block in rollout.yaml to enable.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: success-rate
+  namespace: demo-app
+spec:
+  args:
+    - name: service-name
+    - name: namespace
+      value: demo-app
+    - name: prometheus-url
+      value: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
+
+  metrics:
+    # Check 1: Error rate must be < 1% over last 5 minutes
+    - name: error-rate
+      interval: 60s
+      count: 5
+      successCondition: result[0] < 0.01
+      failureLimit: 2
+      provider:
+        prometheus:
+          address: "{{args.prometheus-url}}"
+          query: |
+            sum(rate(http_requests_total{
+              service="{{args.service-name}}",
+              namespace="{{args.namespace}}",
+              status=~"5.."
+            }[5m]))
+            /
+            sum(rate(http_requests_total{
+              service="{{args.service-name}}",
+              namespace="{{args.namespace}}"
+            }[5m]))
+
+    # Check 2: p99 latency must be < 500ms
+    - name: p99-latency
+      interval: 60s
+      count: 5
+      successCondition: result[0] < 0.5
+      failureLimit: 2
+      provider:
+        prometheus:
+          address: "{{args.prometheus-url}}"
+          query: |
+            histogram_quantile(0.99,
+              sum(rate(http_request_duration_seconds_bucket{
+                service="{{args.service-name}}",
+                namespace="{{args.namespace}}"
+              }[5m])) by (le)
+            )

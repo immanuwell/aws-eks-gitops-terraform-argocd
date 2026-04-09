@@ -1,0 +1,38 @@
+# Active service — receives 100% of production traffic (blue slot)
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.rollout.strategy.blueGreen.activeService }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "demo-app.labels" . | nindent 4 }}
+    service-type: active
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "demo-app.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}
+      protocol: TCP
+
+---
+# Preview service — receives traffic to the new (green) version before promotion
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.rollout.strategy.blueGreen.previewService }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "demo-app.labels" . | nindent 4 }}
+    service-type: preview
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "demo-app.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}
+      protocol: TCP
