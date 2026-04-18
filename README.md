@@ -11,44 +11,48 @@
 
 ## Architecture Overview
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          GitHub (Source of Truth)                    │
-│                                                                      │
-│  ┌─────────────┐   ┌──────────────┐   ┌───────────────────────────┐ │
-│  │  App Code   │   │  IaC (TF)    │   │  GitOps Manifests (Helm)  │ │
-│  └──────┬──────┘   └──────┬───────┘   └────────────┬──────────────┘ │
-└─────────┼────────────────┼────────────────────────┼─────────────────┘
-          │                │                         │
-          ▼                ▼                         │
-┌─────────────────┐  ┌────────────┐                 │
-│  GitHub Actions │  │ Terraform  │                 │
-│  CI/CD Pipeline │  │  Cloud    │                 │
-│                 │  │  (OIDC)   │                 │
-│  1. Build Image │  └─────┬──────┘                 │
-│  2. Trivy Scan  │        │                         │
-│  3. Push → ECR  │        ▼                         │
-│  4. Update tag  │  ┌─────────────────────────────┐ │
-└─────────────────┘  │        AWS EKS Cluster      │ │
-                     │                             │ │
-                     │  ┌─────────┐  ┌──────────┐  │ │
-                     │  │ System  │  │   App    │  │ │
-                     │  │  Nodes  │  │  Nodes   │  │ │
-                     │  └────┬────┘  └────┬─────┘  │ │
-                     │       │            │         │ │
-                     │  ┌────▼────────────▼──────┐  │◄┘
-                     │  │       ArgoCD            │  │
-                     │  │   (App-of-Apps GitOps)  │  │
-                     │  └────────────┬────────────┘  │
-                     │               │               │
-                     │   ┌───────────┼────────────┐  │
-                     │   │           │            │  │
-                     │   ▼           ▼            ▼  │
-                     │ [Sock-Shop] [Monitor]  [Sec]  │
-                     │             Prometheus  Kyver. │
-                     │             Grafana     NetPol │
-                     │             AlertMgr    ExtSec │
-                     └─────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph GH["GitHub — Source of Truth"]
+        CODE["App Code · Dockerfile"]
+        IAC["Terraform IaC"]
+        MANIFESTS["GitOps Manifests\nHelm values · ArgoCD Apps"]
+    end
+
+    subgraph CICD["GitHub Actions  ·  OIDC — no stored AWS credentials"]
+        B1["Build Image\nBuildKit · multi-arch"] --> B2["Trivy Scan\nCRITICAL · HIGH"] --> B3["Push → ECR\ngit SHA tag"] --> B4["Commit image tag\nback to repo"]
+    end
+
+    ECR[("Amazon ECR")]
+
+    subgraph EKS["AWS EKS Cluster 1.29  ·  Provisioned by Terraform"]
+        subgraph SYS["System Node Group  ·  t3.medium  ·  taint: CriticalAddonsOnly"]
+            ARGO["ArgoCD\nApp-of-Apps"]
+            KYVE["Kyverno\nAdmission Control"]
+            ESO["External Secrets Operator\n→ AWS Secrets Manager"]
+            CA["Cluster Autoscaler"]
+        end
+        subgraph APP["Application Node Group  ·  t3.large  ·  HPA: 2 → 20 replicas"]
+            SOCK["Sock Shop\n7 Microservices"]
+            DEMO["demo-app\nArgo Rollouts Blue/Green"]
+            OBS["Prometheus · Grafana\nAlertmanager · SLO alerts"]
+        end
+        ALB["AWS Load Balancer Controller\ninternet-facing ALB"]
+    end
+
+    CODE -->|triggers| CICD
+    IAC -->|terraform apply| EKS
+    B3 --> ECR
+    B4 -->|updates| MANIFESTS
+    MANIFESTS -->|pull & sync| ARGO
+    ECR -->|image pull| DEMO
+    ARGO -->|deploys & manages| SOCK
+    ARGO -->|deploys & manages| DEMO
+    ARGO -->|deploys & manages| OBS
+    ARGO -->|deploys & manages| KYVE
+    ARGO -->|deploys & manages| ESO
+    ALB -->|routes traffic| SOCK
+    ALB -->|routes traffic| DEMO
 ```
 
 ### Key Design Decisions
@@ -188,41 +192,25 @@ kubectl get ingress -n sock-shop
 
 The pipeline uses **GitHub OIDC** for keyless AWS authentication — no static credentials stored in GitHub.
 
-```
-Push to main (apps/demo-app/**)
-         │
-         ▼
-  ┌──────────────┐
-  │ 1. Checkout  │
-  └──────┬───────┘
-         │
-         ▼
-  ┌─────────────────────────────┐
-  │ 2. Configure AWS (OIDC)     │  ← Temporary credentials via STS
-  │    No stored secrets!       │
-  └──────┬──────────────────────┘
-         │
-         ▼
-  ┌──────────────────┐
-  │ 3. Build Image   │  ← Docker BuildKit + layer caching
-  └──────┬───────────┘
-         │
-         ▼
-  ┌──────────────────────────────┐
-  │ 4. Trivy Security Scan       │  ← Fails on CRITICAL/HIGH CVEs
-  │    Upload SARIF → GH Security│  ← Visible in Security tab
-  └──────┬───────────────────────┘
-         │
-         ▼
-  ┌──────────────────┐
-  │ 5. Push to ECR   │  ← Tagged with git SHA
-  └──────┬───────────┘
-         │
-         ▼
-  ┌──────────────────────────────┐
-  │ 6. Update GitOps Repo        │  ← Commit new image tag
-  │    ArgoCD auto-syncs         │  ← Zero-touch deployment
-  └──────────────────────────────┘
+```mermaid
+flowchart TD
+    TRIGGER(["git push · apps/demo-app/**"])
+    CO["Checkout Code"]
+    AUTH["Configure AWS via OIDC\nTemporary STS credentials\nno stored secrets"]
+    BUILD["Build Docker Image\nBuildKit · linux/amd64 + linux/arm64\nlayer cache from GitHub Actions"]
+    SCAN["Trivy Security Scan\nOS packages + app dependencies\nCRITICAL · HIGH severity"]
+    GATE{{"Vulnerabilities\nfound?"}}
+    SARIF_F["Upload SARIF\n→ GitHub Security tab"]
+    FAIL(["Pipeline fails ✗\nPR blocked"])
+    SARIF_P["Upload SARIF\n→ GitHub Security tab"]
+    PUSH["Push to Amazon ECR\nimmutable tag: git SHA\nSBOM + provenance attached"]
+    YQ["Update values.yaml\nnew image tag via yq\nno sed, safe YAML edit"]
+    COMMIT["Commit & push to main\ngitops: promote demo-app to SHA"]
+    ARGOCD(["ArgoCD detects drift\nauto-syncs to cluster ✓\nzero-touch deployment"])
+
+    TRIGGER --> CO --> AUTH --> BUILD --> SCAN --> GATE
+    GATE -- yes --> SARIF_F --> FAIL
+    GATE -- no --> SARIF_P --> PUSH --> YQ --> COMMIT --> ARGOCD
 ```
 
 ---
